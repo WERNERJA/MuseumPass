@@ -21,10 +21,19 @@ jobs:
       - name: Dependencies installeren
         run: pip install -r requirements.txt
 
+      - name: Playwright Chromium installeren
+        run: playwright install chromium --with-deps
+
       - name: Firebase credentials schrijven
         env:
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
-        run: printf '%s' "$FIREBASE_CREDENTIALS" > /tmp/firebase-credentials.json
+        run: |
+          if [ -z "$FIREBASE_CREDENTIALS" ]; then
+            echo "FOUT: FIREBASE_CREDENTIALS secret is niet ingesteld."
+            exit 1
+          fi
+          printf '%s' "$FIREBASE_CREDENTIALS" > /tmp/firebase-credentials.json
+
       - name: Musea updaten
         run: python update_musea.py --credentials /tmp/firebase-credentials.json
 
