@@ -41,19 +41,46 @@ HEADERS = {
 }
 
 # ── Stap 1: Web scraping ───────────────────────────────────────────────────────
-
 def fetch_all_museum_urls(session: requests.Session) -> list[str]:
-    """Haalt alle museum-URLs op via Playwright (JavaScript rendering)."""
+    """Haalt alle museum-URLs op via Playwright (netwerk-interceptie + links)."""
     print("Ophalen van museumlijst via Playwright...")
     try:
         from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+
+        api_museum_urls: list[str] = []
+        api_calls_seen: list[str] = []
+
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
-            page = browser.new_page(
+            context = browser.new_context(
                 user_agent=HEADERS["User-Agent"],
                 locale="nl-BE",
             )
+            page = context.new_page()
+
+            # Intercept JSON responses to find the museum API
+            def handle_response(response):
+                url = response.url
+                if "museumpassmusees.be" not in url:
+                    return
+                ct = response.headers.get("content-type", "")
+                if "json" not in ct:
+                    return
+                api_calls_seen.append(url)
+                try:
+                    data = response.json()
+                    extracted = _extract_museum_urls_from_json_deep(data)
+                    if extracted:
+                        print(f"  API museum-data gevonden: {url[:80]}")
+                        api_museum_urls.extend(extracted)
+                except Exception:
+                    pass
+
+            page.on("response", handle_response)
+
             page.goto(LISTING_URL, wait_until="networkidle", timeout=60000)
+
+            # Click "Toon meer" to load all museums
             clicks = 0
             while clicks < 50:
                 try:
@@ -74,17 +101,63 @@ def fetch_all_museum_urls(session: requests.Session) -> list[str]:
                 except Exception:
                     break
             print(f"\n  'Toon meer' {clicks}x geklikt")
-            hrefs = page.eval_on_selector_all(
-                'a[href*="/nl/museum"], a[href*="/fr/musee"], a[href*="/fr/mus%C3%A9e"]',
+
+            # Diagnostic: dump all site links
+            all_anchors = page.eval_on_selector_all(
+                "a[href]",
                 "els => els.map(el => el.href)"
             )
+            site_links = [h for h in all_anchors if "museumpassmusees.be" in h]
+            unique_site_links = list(dict.fromkeys(site_links))
+            print(f"  Alle site-links op pagina: {len(unique_site_links)}")
+            for lnk in unique_site_links[:20]:
+                print(f"    {lnk}")
+
+            print(f"  API-aanroepen: {len(api_calls_seen)}")
+            for u in api_calls_seen[:10]:
+                print(f"    {u}")
+
             browser.close()
-        unique = list(dict.fromkeys(h for h in hrefs if h))
-        print(f"  Totaal unieke museum-URLs: {len(unique)}")
-        return unique
+
+        # Use API-extracted URLs if available
+        if api_museum_urls:
+            unique = list(dict.fromkeys(api_museum_urls))
+            print(f"  Totaal unieke museum-URLs (via API): {len(unique)}")
+            return unique
+
+        # Fallback: filter site links by path patterns
+        museum_patterns = (
+            "/nl/museum", "/fr/musee", "/nl/musea", "/fr/musees",
+            "/nl/detail", "/fr/detail", "/nl/aanbod/", "/fr/offre/",
+            "/nl/visit", "/fr/visit",
+        )
+        hrefs = [h for h in unique_site_links if any(p in h for p in museum_patterns)]
+        print(f"  Totaal unieke museum-URLs (via links): {len(hrefs)}")
+        return hrefs
+
     except ImportError:
         print("  Playwright niet beschikbaar, val terug op HTTP-scraping...")
         return _fetch_urls_http(session)
+
+
+def _extract_museum_urls_from_json_deep(data, base: str = "https://www.museumpassmusees.be") -> list[str]:
+    """Zoekt recursief museum-URLs in een JSON-structuur."""
+    urls: list[str] = []
+    if isinstance(data, dict):
+        for key in ("items", "museums", "musea", "results", "data", "offers", "content"):
+            if key in data:
+                urls.extend(_extract_museum_urls_from_json_deep(data[key], base))
+        for key in ("url", "slug", "path", "href", "link", "detailUrl", "detail_url", "museumUrl"):
+            val = data.get(key)
+            if isinstance(val, str) and val:
+                full = val if val.startswith("http") else base + val
+                if "museumpassmusees.be" in full:
+                    urls.append(full)
+    elif isinstance(data, list):
+        for item in data:
+            urls.extend(_extract_museum_urls_from_json_deep(item, base))
+    return urls
+    
 
 
 def _fetch_urls_http(session: requests.Session) -> list[str]:
