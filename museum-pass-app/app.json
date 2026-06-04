@@ -1,0 +1,61 @@
+{
+  "expo": {
+    "name": "Museum Pass",
+    "slug": "museum-pass-app",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#1B4F72"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "buildNumber": "2",
+      "bundleIdentifier": "be.wernerjanssens.museumpass",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Deze app heeft je locatie nodig om musea in de buurt te vinden.",
+        "NSLocationAlwaysUsageDescription": "Deze app heeft je locatie nodig om musea in de buurt te vinden.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#1B4F72"
+      },
+      "package": "be.wernerjanssens.museumpass",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Sta Museum Pass toe je locatie te gebruiken om musea in de buurt te vinden."
+        }
+      ],
+      "expo-font"
+    ],
+    "extra": {
+      "firebaseApiKey": "AIzaSyAXqtgFVtAbPmOrMOrZFakTrjMSF62HTTA",
+      "firebaseAuthDomain": "museumpass-b3f1b.firebaseapp.com",
+      "firebaseProjectId": "museumpass-b3f1b",
+      "firebaseStorageBucket": "museumpass-b3f1b.firebasestorage.app",
+      "firebaseMessagingSenderId": "461281806483",
+      "firebaseAppId": "1:461281806483:web:28014a63c9cdba26576566",
+      "eas": {
+        "projectId": "d3f46c00-4432-4734-b5d3-9c4f2e4249b4"
+      }
+    }
+  }
+}
