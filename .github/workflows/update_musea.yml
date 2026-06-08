@@ -35,7 +35,30 @@ jobs:
           printf '%s' "$FIREBASE_CREDENTIALS" > /tmp/firebase-credentials.json
 
       - name: Musea updaten
+        id: update
         run: python update_musea.py --credentials /tmp/firebase-credentials.json
+
+      - name: WhatsApp-bericht sturen via CallMeBot
+        if: always()
+        env:
+          CALLMEBOT_API_KEY: ${{ secrets.CALLMEBOT_API_KEY }}
+        run: |
+          if [ -z "$CALLMEBOT_API_KEY" ]; then
+            echo "CALLMEBOT_API_KEY niet ingesteld, WhatsApp-bericht overgeslagen."
+            exit 0
+          fi
+          if [ -f /tmp/museum_update_summary.json ]; then
+            TOTAAL=$(python3 -c "import json; d=json.load(open('/tmp/museum_update_summary.json')); print(d['totaal_gescraped'])")
+            BIJGEWERKT=$(python3 -c "import json; d=json.load(open('/tmp/museum_update_summary.json')); print(d['bijgewerkt'])")
+            NIEUW=$(python3 -c "import json; d=json.load(open('/tmp/museum_update_summary.json')); print(d['nieuw'])")
+            FOUTEN=$(python3 -c "import json; d=json.load(open('/tmp/museum_update_summary.json')); print(d['scrape_fouten'] + d['schrijf_fouten'])")
+            BERICHT="MuseumPass update klaar! Gescraped: ${TOTAAL}, Bijgewerkt: ${BIJGEWERKT}, Nieuw: ${NIEUW}, Fouten: ${FOUTEN}"
+          else
+            STATUS="${{ steps.update.outcome }}"
+            BERICHT="MuseumPass update mislukt (status: ${STATUS}). Controleer de GitHub Actions logs."
+          fi
+          ENCODED=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$BERICHT")
+          curl -s "https://api.callmebot.com/whatsapp.php?phone=32499712300&text=${ENCODED}&apikey=${CALLMEBOT_API_KEY}" || true
 
       - name: Credentials verwijderen
         if: always()
