@@ -360,6 +360,7 @@ def get_access_token(credentials: dict) -> str:
 # ── Stap 3: Firestore ophalen ──────────────────────────────────────────────────
 
 FIRESTORE_BASE = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}/databases/(default)/documents"
+FIRESTORE_RESOURCE_PATH = f"projects/{FIREBASE_PROJECT}/databases/(default)/documents"
 
 
 def fetch_existing_documents(access_token: str) -> dict[str, dict]:
@@ -456,7 +457,7 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
                 fields = to_firestore_fields(museum, False)
                 writes.append({
                     "update": {
-                        "name":   f"{FIRESTORE_BASE}/{FIRESTORE_COLLECTION}/{doc_id}",
+                        "name":   f"{FIRESTORE_RESOURCE_PATH}/{FIRESTORE_COLLECTION}/{doc_id}",
                         "fields": fields,
                     },
                 })
