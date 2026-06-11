@@ -420,7 +420,7 @@ def to_firestore_fields(museum: dict, al_bezocht: bool) -> dict:
     }
 
 
-def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token: str) -> tuple[int, int, int]:
+def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token: str) -> tuple[int, int, int, list[dict]]:
     auth_headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
@@ -428,6 +428,7 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
 
     BATCH_SIZE = 20
     updated = new = errors = 0
+    new_museums: list[dict] = []
 
     for i in range(0, len(museums), BATCH_SIZE):
         batch = museums[i : i + BATCH_SIZE]
@@ -461,6 +462,10 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
                     },
                 })
                 new += 1
+                new_museums.append({
+                    "naam": museum.get("naam", ""),
+                    "gemeente": museum.get("gemeente", ""),
+                })
 
         if not writes:
             continue
@@ -487,7 +492,22 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
 
         time.sleep(0.1)
 
-    return updated, new, errors
+    return updated, new, errors, new_museums
+
+
+def send_whatsapp(message: str) -> None:
+    api_key = os.environ.get("CALLMEBOT_API_KEY", "")
+    if not api_key:
+        print("  CALLMEBOT_API_KEY niet ingesteld, WhatsApp-notificatie overgeslagen.")
+        return
+    from urllib.parse import quote
+    encoded = quote(message)
+    url = f"https://api.callmebot.com/whatsapp.php?phone=32499712300&text={encoded}&apikey={api_key}"
+    try:
+        resp = requests.get(url, timeout=30)
+        print(f"  WhatsApp verzonden (HTTP {resp.status_code}): {resp.text[:100]}")
+    except Exception as e:
+        print(f"  WhatsApp verzenden mislukt: {e}")
 
 
 def _safe_doc_id(url: str) -> str:
@@ -569,7 +589,7 @@ def main():
     print("\nSTAP 4: Upsert naar Firestore")
     print("-" * 40)
     print(f"  Verwerken van {len(museums)} musea...")
-    updated, new, write_errors = upsert_museums(museums, existing, access_token)
+    updated, new, write_errors, new_museums_list = upsert_museums(museums, existing, access_token)
 
     elapsed = time.time() - start
     print("\n" + "=" * 60)
@@ -578,10 +598,28 @@ def main():
     print(f"  Totaal gescraped:            {len(museums)}")
     print(f"  Bestaande records bijgewerkt: {updated}")
     print(f"  Nieuwe musea toegevoegd:     {new}")
+    if new_museums_list:
+        for m in new_museums_list:
+            print(f"    - {m['naam']} ({m['gemeente']})")
     print(f"  Scrape-fouten:               {scrape_errors}")
     print(f"  Schrijffouten:               {write_errors}")
     print(f"  Tijd:                        {elapsed:.1f}s")
     print("=" * 60)
+
+    print("\nSTAP 5: WhatsApp-notificatie")
+    print("-" * 40)
+    status = "OK" if not write_errors else f"FOUTEN ({write_errors})"
+    lines = [
+        f"MuseumPass update {datetime.now().strftime('%d/%m/%Y')} - {status}",
+        f"Gescraped: {len(museums)} | Bijgewerkt: {updated} | Nieuw: {new}",
+    ]
+    if new_museums_list:
+        lines.append("Nieuwe musea:")
+        for m in new_museums_list:
+            lines.append(f"  - {m['naam']} ({m['gemeente']})")
+    if scrape_errors:
+        lines.append(f"Scrape-fouten: {scrape_errors}")
+    send_whatsapp("\n".join(lines))
 
     if write_errors:
         sys.exit(1)
