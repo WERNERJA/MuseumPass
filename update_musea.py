@@ -583,6 +583,19 @@ def main():
     print(f"  Tijd:                        {elapsed:.1f}s")
     print("=" * 60)
 
+    summary = {
+        "totaal_gescraped": len(museums),
+        "bijgewerkt": updated,
+        "nieuw": new,
+        "scrape_fouten": scrape_errors,
+        "schrijf_fouten": write_errors,
+        "tijd_seconden": round(elapsed, 1),
+    }
+    summary_path = "/tmp/museum_update_summary.json"
+    with open(summary_path, "w") as sf:
+        json.dump(summary, sf)
+    print(f"  Samenvatting geschreven naar: {summary_path}")
+
     if write_errors:
         sys.exit(1)
 
