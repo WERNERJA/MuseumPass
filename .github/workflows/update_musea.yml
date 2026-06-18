@@ -35,6 +35,8 @@ jobs:
           printf '%s' "$FIREBASE_CREDENTIALS" > /tmp/firebase-credentials.json
 
       - name: Musea updaten
+        env:
+          CALLMEBOT_API_KEY: ${{ secrets.CALLMEBOT_API_KEY }}
         run: python update_musea.py --credentials /tmp/firebase-credentials.json
 
       - name: Credentials verwijderen

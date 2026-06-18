@@ -498,6 +498,19 @@ def _safe_doc_id(url: str) -> str:
 
 # ── Hoofdprogramma ─────────────────────────────────────────────────────────────
 
+def send_whatsapp(message: str, api_key: str, phone: str = "32499712300") -> bool:
+    try:
+        import urllib.parse
+        encoded = urllib.parse.quote(message)
+        url = f"https://api.callmebot.com/whatsapp.php?phone={phone}&text={encoded}&apikey={api_key}"
+        resp = requests.get(url, timeout=30)
+        print(f"  WhatsApp verstuurd (HTTP {resp.status_code})")
+        return resp.status_code == 200
+    except Exception as e:
+        print(f"  WhatsApp fout: {e}")
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="MuseumPass Firestore update")
     parser.add_argument("--credentials", default=DEFAULT_CREDENTIALS_PATH,
@@ -569,6 +582,7 @@ def main():
     print("\nSTAP 4: Upsert naar Firestore")
     print("-" * 40)
     print(f"  Verwerken van {len(museums)} musea...")
+    new_museum_list = [m for m in museums if m.get("museumpass_url", "") not in existing]
     updated, new, write_errors = upsert_museums(museums, existing, access_token)
 
     elapsed = time.time() - start
@@ -582,6 +596,30 @@ def main():
     print(f"  Schrijffouten:               {write_errors}")
     print(f"  Tijd:                        {elapsed:.1f}s")
     print("=" * 60)
+
+    # Stap 5: WhatsApp notificatie via CallMeBot
+    callmebot_key = os.environ.get("CALLMEBOT_API_KEY", "")
+    if callmebot_key:
+        print("\nSTAP 5: WhatsApp notificatie")
+        print("-" * 40)
+        datum = datetime.now().strftime("%d/%m/%Y")
+        lines = [
+            f"MuseumPass update {datum}",
+            f"Gescraped: {len(museums)}",
+            f"Bijgewerkt: {updated}",
+            f"Nieuw: {new}",
+        ]
+        if new_museum_list:
+            lines.append("Nieuwe musea:")
+            for m in new_museum_list:
+                naam = m.get("naam", "?")
+                stad = m.get("gemeente", m.get("postcode", "?"))
+                lines.append(f"  - {naam} ({stad})")
+        if scrape_errors or write_errors:
+            lines.append(f"Fouten: scrape={scrape_errors}, schrijf={write_errors}")
+        send_whatsapp("\n".join(lines), callmebot_key)
+    else:
+        print("\nSTAP 5: Geen CALLMEBOT_API_KEY — WhatsApp overgeslagen.")
 
     if write_errors:
         sys.exit(1)
