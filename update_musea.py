@@ -359,7 +359,9 @@ def get_access_token(credentials: dict) -> str:
 
 # ── Stap 3: Firestore ophalen ──────────────────────────────────────────────────
 
-FIRESTORE_BASE = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}/databases/(default)/documents"
+FIRESTORE_REST_BASE = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}/databases/(default)/documents"
+FIRESTORE_RESOURCE_BASE = f"projects/{FIREBASE_PROJECT}/databases/(default)/documents"
+FIRESTORE_BASE = FIRESTORE_REST_BASE  # kept for REST API GET URLs
 
 
 def fetch_existing_documents(access_token: str) -> dict[str, dict]:
@@ -380,8 +382,12 @@ def fetch_existing_documents(access_token: str) -> dict[str, dict]:
             fields = doc.get("fields", {})
             mp_url = _fs_get_string(fields, "museumpass_url")
             if mp_url:
+                doc_name = doc["name"]
+                # Normalize: strip REST base URL prefix if Firestore returns full https path
+                if doc_name.startswith(FIRESTORE_REST_BASE):
+                    doc_name = doc_name[len("https://firestore.googleapis.com/v1/"):]
                 existing[mp_url] = {
-                    "doc_name":   doc["name"],
+                    "doc_name":   doc_name,
                     "al_bezocht": _fs_get_bool(fields, "al_bezocht"),
                 }
 
@@ -456,7 +462,7 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
                 fields = to_firestore_fields(museum, False)
                 writes.append({
                     "update": {
-                        "name":   f"{FIRESTORE_BASE}/{FIRESTORE_COLLECTION}/{doc_id}",
+                        "name":   f"{FIRESTORE_RESOURCE_BASE}/{FIRESTORE_COLLECTION}/{doc_id}",
                         "fields": fields,
                     },
                 })
