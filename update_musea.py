@@ -360,6 +360,7 @@ def get_access_token(credentials: dict) -> str:
 # ── Stap 3: Firestore ophalen ──────────────────────────────────────────────────
 
 FIRESTORE_BASE = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}/databases/(default)/documents"
+FIRESTORE_RESOURCE_BASE = f"projects/{FIREBASE_PROJECT}/databases/(default)/documents"
 
 
 def fetch_existing_documents(access_token: str) -> dict[str, dict]:
@@ -433,6 +434,7 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
     for i in range(0, len(museums), BATCH_SIZE):
         batch = museums[i : i + BATCH_SIZE]
         writes = []
+        batch_new_museums: list[dict] = []
 
         for museum in batch:
             mp_url = museum.get("museumpass_url", "")
@@ -457,11 +459,11 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
                 fields = to_firestore_fields(museum, False)
                 writes.append({
                     "update": {
-                        "name":   f"{FIRESTORE_BASE}/{FIRESTORE_COLLECTION}/{doc_id}",
+                        "name": f"{FIRESTORE_RESOURCE_BASE}/{FIRESTORE_COLLECTION}/{doc_id}",
                         "fields": fields,
                     },
                 })
-                new_museums_list.append({
+                batch_new_museums.append({
                     "naam": museum.get("naam", ""),
                     "gemeente": museum.get("gemeente", ""),
                 })
@@ -479,16 +481,18 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
         )
 
         if resp.status_code != 200:
-            print(f"  Batch {i//BATCH_SIZE + 1} mislukt (HTTP {resp.status_code}): {resp.text[:200]}")
+            print(f"  Batch {i//BATCH_SIZE + 1} mislukt (HTTP {resp.status_code}): {resp.text[:500]}")
             errors += len(writes)
             updated -= sum(1 for w in writes if "updateMask" in w)
-            new     -= sum(1 for w in writes if "updateMask" not in w)
+            new -= len(batch_new_museums)
         else:
             write_results = resp.json().get("writeResults", [])
             failed = sum(1 for wr in write_results if "updateTime" not in wr)
             if failed:
                 print(f"  {failed} writes in batch {i//BATCH_SIZE + 1} hadden geen updateTime")
                 errors += failed
+            else:
+                new_museums_list.extend(batch_new_museums)
 
         time.sleep(0.1)
 
