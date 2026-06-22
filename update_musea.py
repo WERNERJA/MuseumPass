@@ -420,7 +420,7 @@ def to_firestore_fields(museum: dict, al_bezocht: bool) -> dict:
     }
 
 
-def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token: str) -> tuple[int, int, int]:
+def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token: str) -> tuple[int, int, int, list[dict]]:
     auth_headers = {
         "Authorization": f"Bearer {access_token}",
         "Content-Type": "application/json",
@@ -428,10 +428,12 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
 
     BATCH_SIZE = 20
     updated = new = errors = 0
+    new_museum_details: list[dict] = []
 
     for i in range(0, len(museums), BATCH_SIZE):
         batch = museums[i : i + BATCH_SIZE]
         writes = []
+        batch_new: list[dict] = []
 
         for museum in batch:
             mp_url = museum.get("museumpass_url", "")
@@ -460,6 +462,7 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
                         "fields": fields,
                     },
                 })
+                batch_new.append({"naam": museum.get("naam", ""), "gemeente": museum.get("gemeente", "")})
                 new += 1
 
         if not writes:
@@ -484,10 +487,12 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
             if failed:
                 print(f"  {failed} writes in batch {i//BATCH_SIZE + 1} hadden geen updateTime")
                 errors += failed
+            else:
+                new_museum_details.extend(batch_new)
 
         time.sleep(0.1)
 
-    return updated, new, errors
+    return updated, new, errors, new_museum_details
 
 
 def _safe_doc_id(url: str) -> str:
@@ -569,18 +574,22 @@ def main():
     print("\nSTAP 4: Upsert naar Firestore")
     print("-" * 40)
     print(f"  Verwerken van {len(museums)} musea...")
-    updated, new, write_errors = upsert_museums(museums, existing, access_token)
+    updated, new, write_errors, new_museum_details = upsert_museums(museums, existing, access_token)
 
     elapsed = time.time() - start
     print("\n" + "=" * 60)
     print("SAMENVATTING")
     print("=" * 60)
-    print(f"  Totaal gescraped:            {len(museums)}")
+    print(f"  Totaal gescraped:             {len(museums)}")
     print(f"  Bestaande records bijgewerkt: {updated}")
-    print(f"  Nieuwe musea toegevoegd:     {new}")
-    print(f"  Scrape-fouten:               {scrape_errors}")
-    print(f"  Schrijffouten:               {write_errors}")
-    print(f"  Tijd:                        {elapsed:.1f}s")
+    print(f"  Nieuwe musea toegevoegd:      {new}")
+    if new_museum_details:
+        print("  Nieuwe musea:")
+        for m in new_museum_details:
+            print(f"    - {m['naam']} ({m['gemeente']})")
+    print(f"  Scrape-fouten:                {scrape_errors}")
+    print(f"  Schrijffouten:                {write_errors}")
+    print(f"  Tijd:                         {elapsed:.1f}s")
     print("=" * 60)
 
     if write_errors:

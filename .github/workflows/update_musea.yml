@@ -35,8 +35,43 @@ jobs:
           printf '%s' "$FIREBASE_CREDENTIALS" > /tmp/firebase-credentials.json
 
       - name: Musea updaten
-        run: python update_musea.py --credentials /tmp/firebase-credentials.json
+        id: update
+        run: |
+          python update_musea.py --credentials /tmp/firebase-credentials.json 2>&1 | tee /tmp/update_output.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Credentials verwijderen
         if: always()
         run: rm -f /tmp/firebase-credentials.json
+
+      - name: WhatsApp notificatie sturen
+        if: always()
+        env:
+          CALLMEBOT_API_KEY: ${{ secrets.CALLMEBOT_API_KEY }}
+        run: |
+          if [ -z "$CALLMEBOT_API_KEY" ]; then
+            echo "WAARSCHUWING: CALLMEBOT_API_KEY secret is niet ingesteld. WhatsApp notificatie overgeslagen."
+            exit 0
+          fi
+
+          DATUM=$(date '+%Y-%m-%d')
+          STATUS="${{ steps.update.outcome }}"
+
+          # Extract summary block from output
+          SAMENVATTING=$(awk '/^={5}/{ found++ } found==2{ if(/^={5}/) next; print }' /tmp/update_output.txt | head -20)
+
+          if [ "$STATUS" = "success" ]; then
+            MSG="✅ MuseumPass Update ${DATUM}
+${SAMENVATTING}"
+          else
+            FOUT=$(tail -5 /tmp/update_output.txt)
+            MSG="❌ MuseumPass Update ${DATUM} MISLUKT
+${FOUT}"
+          fi
+
+          # Trim to 4000 chars max (WhatsApp/CallMeBot limit)
+          MSG="${MSG:0:4000}"
+
+          ENCODED=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$MSG")
+          RESPONSE=$(curl -s "https://api.callmebot.com/whatsapp.php?phone=32499712300&text=${ENCODED}&apikey=${CALLMEBOT_API_KEY}")
+          echo "CallMeBot response: $RESPONSE"
