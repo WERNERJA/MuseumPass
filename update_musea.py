@@ -359,7 +359,8 @@ def get_access_token(credentials: dict) -> str:
 
 # ── Stap 3: Firestore ophalen ──────────────────────────────────────────────────
 
-FIRESTORE_BASE = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}/databases/(default)/documents"
+FIRESTORE_BASE     = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}/databases/(default)/documents"
+FIRESTORE_RESOURCE = f"projects/{FIREBASE_PROJECT}/databases/(default)/documents"
 
 
 def fetch_existing_documents(access_token: str) -> dict[str, dict]:
@@ -457,7 +458,7 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
                 fields = to_firestore_fields(museum, False)
                 writes.append({
                     "update": {
-                        "name":   f"{FIRESTORE_BASE}/{FIRESTORE_COLLECTION}/{doc_id}",
+                        "name":   f"{FIRESTORE_RESOURCE}/{FIRESTORE_COLLECTION}/{doc_id}",
                         "fields": fields,
                     },
                 })
@@ -476,10 +477,30 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
         )
 
         if resp.status_code != 200:
-            print(f"  Batch {i//BATCH_SIZE + 1} mislukt (HTTP {resp.status_code}): {resp.text[:200]}")
-            errors += len(writes)
-            updated -= sum(1 for w in writes if "updateMask" in w)
-            new     -= sum(1 for w in writes if "updateMask" not in w)
+            print(f"  Batch {i//BATCH_SIZE + 1} mislukt (HTTP {resp.status_code}), individueel herproberen...")
+            # Retry elke write afzonderlijk zodat 1 fout niet de hele batch blokkeert
+            batch_errors = 0
+            for w in writes:
+                is_update = "updateMask" in w
+                r2 = requests.post(
+                    f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}"
+                    f"/databases/(default)/documents:batchWrite",
+                    headers=auth_headers,
+                    json={"writes": [w]},
+                    timeout=30,
+                )
+                if r2.status_code != 200:
+                    doc_name = w.get("update", {}).get("name", "?")
+                    print(f"    Fout bij {doc_name[-80:]}: HTTP {r2.status_code} – {r2.text[:120]}")
+                    errors += 1
+                    if is_update:
+                        updated -= 1
+                    else:
+                        new -= 1
+                    batch_errors += 1
+                time.sleep(0.05)
+            if batch_errors:
+                print(f"  {batch_errors} writes in batch {i//BATCH_SIZE + 1} definitief mislukt")
         else:
             write_results = resp.json().get("writeResults", [])
             failed = sum(1 for wr in write_results if "updateTime" not in wr)
