@@ -1,0 +1,25 @@
+name: Stuur WhatsApp Notificatie
+
+on:
+  workflow_dispatch:
+    inputs:
+      bericht:
+        description: 'Het bericht om te versturen'
+        required: true
+        type: string
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: WhatsApp-bericht sturen via CallMeBot
+        env:
+          CALLMEBOT_API_KEY: ${{ secrets.CALLMEBOT_API_KEY }}
+        run: |
+          if [ -z "$CALLMEBOT_API_KEY" ]; then
+            echo "FOUT: CALLMEBOT_API_KEY secret is niet ingesteld."
+            exit 1
+          fi
+          ENCODED=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "${{ inputs.bericht }}")
+          RESPONSE=$(curl -s "https://api.callmebot.com/whatsapp.php?phone=32499712300&text=${ENCODED}&apikey=${CALLMEBOT_API_KEY}")
+          echo "CallMeBot response: $RESPONSE"
