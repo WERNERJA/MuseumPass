@@ -423,6 +423,36 @@ def to_firestore_fields(museum: dict, al_bezocht: bool) -> dict:
     }
 
 
+def match_by_museum_id(museums: list[dict], existing: dict[str, dict]) -> list[str]:
+    """
+    Zelfde museum-ID maar andere URL (naam gewijzigd) => hetzelfde museum.
+    Het bestaande record wordt in `existing` onder de nieuwe URL gezet, zodat de
+    upsert het bijwerkt (nieuwe naam/URL, al_bezocht blijft) i.p.v. een nieuw
+    record aan te maken. Geeft een lijst 'oude naam -> nieuwe naam' terug.
+    """
+    scraped = {m.get("museumpass_url", "") for m in museums}
+    # kandidaten: bestaande records waarvan de URL niet meer op de website staat
+    by_id: dict[str, list[str]] = {}
+    for url, d in existing.items():
+        mid = _museum_id(url)
+        if mid and url not in scraped:
+            by_id.setdefault(mid, []).append(url)
+    renamed: list[str] = []
+    for m in museums:
+        url = m.get("museumpass_url", "")
+        if not url or url in existing:
+            continue
+        cands = by_id.pop(_museum_id(url), None)
+        if not cands:
+            continue
+        # bij meerdere oude versies: neem een bezochte, de rest wordt later opgeruimd
+        cands.sort(key=lambda u: not existing[u]["al_bezocht"])
+        old = existing.pop(cands[0])
+        existing[url] = old
+        renamed.append(f"{old['naam'] or '?'} -> {m.get('naam', '?')}")
+    return renamed
+
+
 def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token: str) -> tuple[int, int, int, list[dict]]:
     auth_headers = {
         "Authorization": f"Bearer {access_token}",
@@ -763,6 +793,11 @@ def main():
     print("\nSTAP 3: Bestaande Firestore-data")
     print("-" * 40)
     existing = fetch_existing_documents(access_token)
+    renamed = match_by_museum_id(museums, existing)
+    if renamed:
+        print(f"  {len(renamed)} musea met gewijzigde naam/URL (zelfde museum-ID) worden bijgewerkt:")
+        for r in renamed:
+            print(f"    - {r}")
 
     print("\nSTAP 4: Upsert naar Firestore")
     print("-" * 40)
@@ -784,6 +819,7 @@ def main():
     print(f"  Totaal gescraped:             {len(museums)}")
     print(f"  Bestaande records bijgewerkt: {updated}")
     print(f"  Nieuwe musea toegevoegd:      {new}")
+    print(f"  Naam gewijzigd (bijgewerkt):  {len(renamed)}")
     print(f"  Verouderde records verwijderd: {prune['deleted']}")
     for naam in prune["deleted_list"]:
         print(f"    - verwijderd: {naam}")
@@ -818,6 +854,10 @@ def main():
             lines.append("Nieuwe musea:")
             for m in new_museums:
                 lines.append(f"  - {m.get('naam', '?')} ({m.get('gemeente', '?')})")
+        if renamed:
+            lines.append("Naam gewijzigd:")
+            for r in renamed[:40]:
+                lines.append(f"  - {r}")
         if prune["deleted"]:
             lines.append(f"Verwijderd (niet meer op website): {prune['deleted']}")
             for naam in prune["deleted_list"][:40]:
