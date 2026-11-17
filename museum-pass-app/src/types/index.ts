@@ -16,6 +16,7 @@ export interface Museum {
   url_museum: string;      // museumwebsite (leeg voor ~86/268)
   museumpass_url: string;  // MuseumPASS-pagina (altijd ingevuld)
   al_bezocht: boolean;     // bezocht? — opgeslagen in Firestore, NOOIT resetten
+  gearchiveerd: boolean;   // museum doet niet meer mee aan de Museumpas (gezet door update-script)
 
   // Toegevoegd door de app na geocoding:
   latitude?: number;

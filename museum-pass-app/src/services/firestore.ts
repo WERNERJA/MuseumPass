@@ -52,7 +52,17 @@ function docToMuseum(id: string, data: Record<string, unknown>): Museum {
     url_museum: (data.url_museum as string) ?? '',
     museumpass_url: (data.museumpass_url as string) ?? '',
     al_bezocht: (data.al_bezocht as boolean) ?? false,
+    gearchiveerd: (data.gearchiveerd as boolean) ?? false,
   };
+}
+
+/**
+ * Zet Firestore-documenten om naar musea en laat gearchiveerde musea weg
+ * (musea die niet meer deelnemen aan de Museumpas). Alle leesfuncties
+ * gebruiken dit, zodat geen enkel scherm gearchiveerde musea toont.
+ */
+function activeMusea(docs: { id: string; data: () => Record<string, unknown> }[]): Museum[] {
+  return docs.map((d) => docToMuseum(d.id, d.data())).filter((m) => !m.gearchiveerd);
 }
 
 // ---------------------------------------------------------------------------
@@ -60,11 +70,11 @@ function docToMuseum(id: string, data: Record<string, unknown>): Museum {
 // ---------------------------------------------------------------------------
 
 /**
- * Haal alle musea op uit Firestore.
+ * Haal alle actieve (niet-gearchiveerde) musea op uit Firestore.
  */
 export async function getAllMusea(): Promise<Museum[]> {
   const snapshot = await getDocs(collection(db, MUSEA_COLLECTION));
-  return snapshot.docs.map((d) => docToMuseum(d.id, d.data()));
+  return activeMusea(snapshot.docs);
 }
 
 /**
@@ -76,7 +86,7 @@ export async function getMuseaByGemeente(gemeente: string): Promise<Museum[]> {
     where('gemeente', '==', gemeente),
   );
   const snapshot = await getDocs(q);
-  return snapshot.docs.map((d) => docToMuseum(d.id, d.data()));
+  return activeMusea(snapshot.docs);
 }
 
 /**
@@ -100,7 +110,7 @@ export async function getNotVisited(): Promise<Museum[]> {
     where('al_bezocht', '==', false),
   );
   const snapshot = await getDocs(q);
-  return snapshot.docs.map((d) => docToMuseum(d.id, d.data()));
+  return activeMusea(snapshot.docs);
 }
 
 // ---------------------------------------------------------------------------
