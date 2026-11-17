@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: '0 8 1 * *'
   workflow_dispatch:
+    inputs:
+      prune:
+        description: 'Records die niet meer op de website staan'
+        type: choice
+        default: delete
+        options:
+          - delete
+          - preview
+          - 'off'
 
 jobs:
   update:
@@ -37,7 +46,8 @@ jobs:
       - name: Musea updaten
         env:
           CALLMEBOT_API_KEY: ${{ secrets.CALLMEBOT_API_KEY }}
-        run: python update_musea.py --credentials /tmp/firebase-credentials.json
+          PRUNE_MODE: ${{ inputs.prune || 'delete' }}
+        run: python update_musea.py --credentials /tmp/firebase-credentials.json --prune "$PRUNE_MODE"
 
       - name: Credentials verwijderen
         if: always()

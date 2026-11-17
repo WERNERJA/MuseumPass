@@ -384,6 +384,7 @@ def fetch_existing_documents(access_token: str) -> dict[str, dict]:
                 existing[mp_url] = {
                     "doc_name":   doc["name"],
                     "al_bezocht": _fs_get_bool(fields, "al_bezocht"),
+                    "naam":       _fs_get_string(fields, "naam"),
                 }
 
         page_token = data.get("nextPageToken")
@@ -513,6 +514,134 @@ def upsert_museums(museums: list[dict], existing: dict[str, dict], access_token:
     return updated, new, errors, new_museums
 
 
+# ── Stap 4b: Verouderde records opruimen ──────────────────────────────────────
+
+def _norm_naam(naam: str) -> str:
+    """Naam zonder toevoegingen tussen haakjes, bv. 'X (vanaf 02/11)' -> 'x'."""
+    naam = re.sub(r'\s*\([^)]*\)', ' ', naam or '')
+    return re.sub(r'\s+', ' ', naam).strip().lower()
+
+
+def _batch_write(writes: list[dict], auth_headers: dict) -> int:
+    """Voert writes uit in batches; geeft het aantal mislukte writes terug."""
+    failed = 0
+    for i in range(0, len(writes), 20):
+        chunk = writes[i : i + 20]
+        resp = requests.post(
+            f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}"
+            f"/databases/(default)/documents:batchWrite",
+            headers=auth_headers,
+            json={"writes": chunk},
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            print(f"    Batch mislukt (HTTP {resp.status_code}): {resp.text[:200]}")
+            failed += len(chunk)
+            continue
+        for st in resp.json().get("status", []):
+            if st.get("code", 0) != 0:
+                print(f"    Write mislukt: {st.get('message', '')[:200]}")
+                failed += 1
+        time.sleep(0.1)
+    return failed
+
+
+def prune_stale(museums: list[dict], existing: dict[str, dict], access_token: str,
+                scrape_errors: int, preview: bool) -> dict:
+    """
+    Verwijdert Firestore-documenten waarvan de museumpass_url niet meer op de
+    website voorkomt (bv. omdat de naam/URL van een museum gewijzigd is).
+
+    - Staat een verouderd record op al_bezocht=true, dan wordt die waarde eerst
+      overgezet op het huidige record met dezelfde naam (zonder haakjes).
+    - Bezochte verouderde records zonder huidig equivalent blijven behouden.
+    - Records die nog op de website staan worden nooit aangeraakt of gewist.
+    """
+    result = {"deleted": 0, "transferred": [], "kept": [], "errors": 0, "skipped": ""}
+    scraped_urls = {m["museumpass_url"] for m in museums if m.get("museumpass_url")}
+    stale = {u: d for u, d in existing.items() if u not in scraped_urls}
+    print(f"  {len(stale)} verouderde records (niet meer op de website).")
+    if not stale:
+        return result
+
+    # Veiligheid: niet opruimen als de scrape onvolledig lijkt
+    if scrape_errors:
+        result["skipped"] = f"{scrape_errors} scrape-fouten"
+    elif len(museums) < 200:
+        result["skipped"] = f"slechts {len(museums)} musea gescraped"
+    elif len(stale) > 0.25 * len(existing):
+        result["skipped"] = f"{len(stale)} van {len(existing)} records zou verdwijnen"
+    if result["skipped"]:
+        print(f"  Opruimen OVERGESLAGEN: {result['skipped']}")
+        return result
+
+    # Huidige records per genormaliseerde naam
+    current: dict[str, list[dict]] = {}
+    for m in museums:
+        url = m.get("museumpass_url", "")
+        if not url:
+            continue
+        if url in existing:
+            doc_name, bezocht = existing[url]["doc_name"], existing[url]["al_bezocht"]
+        else:
+            doc_name = f"{FIRESTORE_RESOURCE}/{FIRESTORE_COLLECTION}/{_safe_doc_id(url)}"
+            bezocht = False
+        current.setdefault(_norm_naam(m.get("naam", "")), []).append(
+            {"doc_name": doc_name, "al_bezocht": bezocht, "naam": m.get("naam", "")}
+        )
+
+    transfers: dict[str, str] = {}   # doc_name huidig record -> naam
+    deletes: list[dict] = []
+    for url, d in sorted(stale.items(), key=lambda kv: kv[1]["naam"].lower()):
+        matches = current.get(_norm_naam(d["naam"]), []) if d["naam"] else []
+        if d["al_bezocht"] and len(matches) != 1:
+            actie = "BEHOUDEN (bezocht, geen eenduidig huidig record)"
+            result["kept"].append(d["naam"] or url)
+        else:
+            actie = "verwijderen"
+            if d["al_bezocht"]:
+                tgt = matches[0]
+                if tgt["al_bezocht"]:
+                    actie += f" (huidig record '{tgt['naam']}' is al bezocht)"
+                else:
+                    actie += f" + bezocht overzetten naar '{tgt['naam']}'"
+                    transfers[tgt["doc_name"]] = tgt["naam"]
+            elif matches:
+                actie += f" (huidig record: '{matches[0]['naam']}')"
+            else:
+                actie += " (geen huidig record met deze naam)"
+            deletes.append(d)
+        print(f"    - {d['naam'] or '?'} [bezocht={d['al_bezocht']}] -> {actie}")
+        print(f"        {url}")
+
+    result["transferred"] = sorted(transfers.values())
+    if preview:
+        print(f"  PREVIEW: {len(deletes)} te verwijderen, {len(transfers)} x bezocht over te zetten, "
+              f"{len(result['kept'])} behouden. Niets gewijzigd.")
+        return result
+
+    auth_headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    if transfers:
+        failed = _batch_write([
+            {"update": {"name": dn, "fields": {"al_bezocht": {"booleanValue": True}}},
+             "updateMask": {"fieldPaths": ["al_bezocht"]},
+             "currentDocument": {"exists": True}}
+            for dn in transfers
+        ], auth_headers)
+        if failed:
+            print("  Overzetten van 'bezocht' mislukt — er wordt NIETS verwijderd.")
+            result["errors"] = failed
+            result["transferred"] = []
+            return result
+        print(f"  'bezocht' overgezet op {len(transfers)} huidige records.")
+
+    failed = _batch_write([{"delete": d["doc_name"]} for d in deletes], auth_headers)
+    result["errors"] = failed
+    result["deleted"] = len(deletes) - failed
+    print(f"  {result['deleted']} verouderde records verwijderd, {failed} fouten.")
+    return result
+
+
 # ── Stap 5: WhatsApp notificatie ───────────────────────────────────────────────
 
 def send_whatsapp(message: str, phone: str, api_key: str) -> bool:
@@ -549,6 +678,9 @@ def main():
                         help="Telefoonnummer voor WhatsApp-notificatie")
     parser.add_argument("--callmebot-apikey", default=None,
                         help="CallMeBot API-sleutel voor WhatsApp-notificatie")
+    parser.add_argument("--prune", choices=("off", "preview", "delete"), default="off",
+                        help="Records die niet meer op de website staan: "
+                             "negeren, enkel tonen, of verwijderen")
     args = parser.parse_args()
 
     start = time.time()
@@ -614,6 +746,14 @@ def main():
     print(f"  Verwerken van {len(museums)} musea...")
     updated, new, write_errors, new_museums = upsert_museums(museums, existing, access_token)
 
+    prune = {"deleted": 0, "transferred": [], "kept": [], "errors": 0, "skipped": ""}
+    if args.prune != "off":
+        print("\nSTAP 4b: Verouderde records opruimen" + (" (preview)" if args.prune == "preview" else ""))
+        print("-" * 40)
+        prune = prune_stale(museums, existing, access_token,
+                            scrape_errors + write_errors, preview=(args.prune == "preview"))
+        write_errors += prune["errors"]
+
     elapsed = time.time() - start
     print("\n" + "=" * 60)
     print("SAMENVATTING")
@@ -621,6 +761,13 @@ def main():
     print(f"  Totaal gescraped:             {len(museums)}")
     print(f"  Bestaande records bijgewerkt: {updated}")
     print(f"  Nieuwe musea toegevoegd:      {new}")
+    print(f"  Verouderde records verwijderd: {prune['deleted']}")
+    if prune["transferred"]:
+        print(f"  'Bezocht' overgezet op:       {', '.join(prune['transferred'])}")
+    if prune["kept"]:
+        print(f"  Verouderd maar behouden:      {', '.join(prune['kept'])}")
+    if prune["skipped"]:
+        print(f"  Opruimen overgeslagen:        {prune['skipped']}")
     print(f"  Scrape-fouten:                {scrape_errors}")
     print(f"  Schrijffouten:                {write_errors}")
     print(f"  Tijd:                         {elapsed:.1f}s")
@@ -632,7 +779,7 @@ def main():
 
     # WhatsApp notificatie
     callmebot_key = args.callmebot_apikey or os.environ.get("CALLMEBOT_API_KEY", "")
-    if callmebot_key:
+    if callmebot_key and args.prune != "preview":
         print("\nSTAP 5: WhatsApp-notificatie")
         print("-" * 40)
         datum = datetime.now().strftime("%Y-%m-%d")
@@ -646,6 +793,12 @@ def main():
             lines.append("Nieuwe musea:")
             for m in new_museums:
                 lines.append(f"  - {m.get('naam', '?')} ({m.get('gemeente', '?')})")
+        if prune["deleted"]:
+            lines.append(f"Verwijderd (niet meer op website): {prune['deleted']}")
+        if prune["kept"]:
+            lines.append(f"Verouderd maar bezocht, behouden: {', '.join(prune['kept'])}")
+        if prune["skipped"]:
+            lines.append(f"Opruimen overgeslagen: {prune['skipped']}")
         if scrape_errors or write_errors:
             lines.append(f"Fouten: {scrape_errors} scrape, {write_errors} schrijf")
         message = "\n".join(lines)
