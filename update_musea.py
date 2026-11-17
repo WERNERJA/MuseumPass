@@ -385,6 +385,7 @@ def fetch_existing_documents(access_token: str) -> dict[str, dict]:
                     "doc_name":   doc["name"],
                     "al_bezocht": _fs_get_bool(fields, "al_bezocht"),
                     "naam":       _fs_get_string(fields, "naam"),
+                    "gemeente":   _fs_get_string(fields, "gemeente"),
                 }
 
         page_token = data.get("nextPageToken")
@@ -522,6 +523,15 @@ def _norm_naam(naam: str) -> str:
     return re.sub(r'\s+', ' ', naam).strip().lower()
 
 
+_UUID_RE = re.compile(r'/museum/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', re.I)
+
+
+def _museum_id(url: str) -> str:
+    """Vaste museum-ID uit de museumpass-URL (verandert niet bij naamswijziging)."""
+    m = _UUID_RE.search(url or '')
+    return m.group(1).lower() if m else ''
+
+
 def _batch_write(writes: list[dict], auth_headers: dict) -> int:
     """Voert writes uit in batches; geeft het aantal mislukte writes terug."""
     failed = 0
@@ -557,7 +567,7 @@ def prune_stale(museums: list[dict], existing: dict[str, dict], access_token: st
     - Bezochte verouderde records zonder huidig equivalent blijven behouden.
     - Records die nog op de website staan worden nooit aangeraakt of gewist.
     """
-    result = {"deleted": 0, "transferred": [], "kept": [], "errors": 0, "skipped": ""}
+    result = {"deleted": 0, "deleted_list": [], "transferred": [], "kept": [], "errors": 0, "skipped": ""}
     scraped_urls = {m["museumpass_url"] for m in museums if m.get("museumpass_url")}
     stale = {u: d for u, d in existing.items() if u not in scraped_urls}
     print(f"  {len(stale)} verouderde records (niet meer op de website).")
@@ -575,8 +585,9 @@ def prune_stale(museums: list[dict], existing: dict[str, dict], access_token: st
         print(f"  Opruimen OVERGESLAGEN: {result['skipped']}")
         return result
 
-    # Huidige records per genormaliseerde naam
+    # Huidige records per museum-ID en per genormaliseerde naam
     current: dict[str, list[dict]] = {}
+    current_by_id: dict[str, dict] = {}
     for m in museums:
         url = m.get("museumpass_url", "")
         if not url:
@@ -586,14 +597,21 @@ def prune_stale(museums: list[dict], existing: dict[str, dict], access_token: st
         else:
             doc_name = f"{FIRESTORE_RESOURCE}/{FIRESTORE_COLLECTION}/{_safe_doc_id(url)}"
             bezocht = False
-        current.setdefault(_norm_naam(m.get("naam", "")), []).append(
-            {"doc_name": doc_name, "al_bezocht": bezocht, "naam": m.get("naam", "")}
-        )
+        rec = {"doc_name": doc_name, "al_bezocht": bezocht, "naam": m.get("naam", "")}
+        current.setdefault(_norm_naam(m.get("naam", "")), []).append(rec)
+        mid = _museum_id(url)
+        if mid:
+            current_by_id[mid] = rec
 
     transfers: dict[str, str] = {}   # doc_name huidig record -> naam
     deletes: list[dict] = []
     for url, d in sorted(stale.items(), key=lambda kv: kv[1]["naam"].lower()):
-        matches = current.get(_norm_naam(d["naam"]), []) if d["naam"] else []
+        # 1) zelfde museum-ID in de URL, 2) anders zelfde naam (zonder haakjes)
+        by_id = current_by_id.get(_museum_id(url))
+        if by_id:
+            matches = [by_id]
+        else:
+            matches = current.get(_norm_naam(d["naam"]), []) if d["naam"] else []
         if d["al_bezocht"] and len(matches) != 1:
             actie = "BEHOUDEN (bezocht, geen eenduidig huidig record)"
             result["kept"].append(d["naam"] or url)
@@ -615,6 +633,9 @@ def prune_stale(museums: list[dict], existing: dict[str, dict], access_token: st
         print(f"        {url}")
 
     result["transferred"] = sorted(transfers.values())
+    result["deleted_list"] = [
+        (d["naam"] or "?") + (f" ({d['gemeente']})" if d.get("gemeente") else "") for d in deletes
+    ]
     if preview:
         print(f"  PREVIEW: {len(deletes)} te verwijderen, {len(transfers)} x bezocht over te zetten, "
               f"{len(result['kept'])} behouden. Niets gewijzigd.")
@@ -638,6 +659,8 @@ def prune_stale(museums: list[dict], existing: dict[str, dict], access_token: st
     failed = _batch_write([{"delete": d["doc_name"]} for d in deletes], auth_headers)
     result["errors"] = failed
     result["deleted"] = len(deletes) - failed
+    if failed:
+        result["deleted_list"] = []  # onzeker welke precies gelukt zijn
     print(f"  {result['deleted']} verouderde records verwijderd, {failed} fouten.")
     return result
 
@@ -746,7 +769,7 @@ def main():
     print(f"  Verwerken van {len(museums)} musea...")
     updated, new, write_errors, new_museums = upsert_museums(museums, existing, access_token)
 
-    prune = {"deleted": 0, "transferred": [], "kept": [], "errors": 0, "skipped": ""}
+    prune = {"deleted": 0, "deleted_list": [], "transferred": [], "kept": [], "errors": 0, "skipped": ""}
     if args.prune != "off":
         print("\nSTAP 4b: Verouderde records opruimen" + (" (preview)" if args.prune == "preview" else ""))
         print("-" * 40)
@@ -762,6 +785,8 @@ def main():
     print(f"  Bestaande records bijgewerkt: {updated}")
     print(f"  Nieuwe musea toegevoegd:      {new}")
     print(f"  Verouderde records verwijderd: {prune['deleted']}")
+    for naam in prune["deleted_list"]:
+        print(f"    - verwijderd: {naam}")
     if prune["transferred"]:
         print(f"  'Bezocht' overgezet op:       {', '.join(prune['transferred'])}")
     if prune["kept"]:
@@ -795,6 +820,12 @@ def main():
                 lines.append(f"  - {m.get('naam', '?')} ({m.get('gemeente', '?')})")
         if prune["deleted"]:
             lines.append(f"Verwijderd (niet meer op website): {prune['deleted']}")
+            for naam in prune["deleted_list"][:40]:
+                lines.append(f"  - {naam}")
+            if len(prune["deleted_list"]) > 40:
+                lines.append(f"  ... en nog {len(prune['deleted_list']) - 40}")
+        if prune["transferred"]:
+            lines.append("Bezocht overgezet naar: " + ", ".join(prune["transferred"]))
         if prune["kept"]:
             lines.append(f"Verouderd maar bezocht, behouden: {', '.join(prune['kept'])}")
         if prune["skipped"]:
