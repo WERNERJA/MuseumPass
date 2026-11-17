@@ -807,6 +807,8 @@ def main():
             print("  WhatsApp-bericht verzonden.")
         else:
             print("  WhatsApp-bericht MISLUKT.")
+    elif args.prune == "preview":
+        print("\n(Preview-modus — WhatsApp overgeslagen)")
     else:
         print("\n(Geen CallMeBot API-sleutel opgegeven — WhatsApp overgeslagen)")
 
